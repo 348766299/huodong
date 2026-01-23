@@ -4,7 +4,7 @@
 // @version      1.2
 // @description  仅点击按钮填充申报价格（无对应货号默认填999）+取消含价格提示的商品勾选（按钮移至右上角）
 // @author       悟
-// @match        https://agentseller.temu.com/activity*
+// @match        https://agentseller.temu.com/activity/*
 // @grant        GM_addStyle
 // @run-at       document-end
 // @updateURL    https://raw.githubusercontent.com/348766299/huodong/main/huodong.user.js  // 油猴检测更新的链接
@@ -361,5 +361,6 @@
     document.addEventListener('DOMContentLoaded', init);
     window.addEventListener('load', init);
     setTimeout(init, 100);
+
 
 })();
