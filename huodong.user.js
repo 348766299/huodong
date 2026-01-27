@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Temu服装活动报名（价格填充+取消勾选）
 // @namespace    http://tampermonkey.net/
-// @version      1.3
+// @version      1.4
 // @description  仅点击按钮填充申报价格（无对应货号默认填999）+取消含价格提示的商品勾选（按钮移至右上角）
 // @author       悟
 // @match        https://agentseller.temu.com/activity/*
@@ -99,6 +99,10 @@
                 const secondaryInput = row.querySelector('input[min][max]');
 
                 if (mainInput) {
+                    // 为页面原有输入框补充id/name（解决表单提示）
+                    if (!mainInput.id) mainInput.id = `price-input-${sku}`;
+                    if (!mainInput.name) mainInput.name = `price-input-${sku}`;
+                    
                     const initializationFlag = 'priceInitialized';
                     let price = skuPriceMap[sku];
                     if (price === undefined) {
@@ -114,6 +118,10 @@
                 }
 
                 if (secondaryInput) {
+                    // 为页面原有输入框补充id/name（解决表单提示）
+                    if (!secondaryInput.id) secondaryInput.id = `secondary-input-${sku}`;
+                    if (!secondaryInput.name) secondaryInput.name = `secondary-input-${sku}`;
+                    
                     const initializationFlag = 'fixedInitialized';
                     if (force || !secondaryInput.dataset[initializationFlag]) {
                         handleInputAutoFill(secondaryInput, 100);
@@ -171,6 +179,22 @@
                 checkbox = wrapper ? wrapper.querySelector('input[type="checkbox"]') : null;
             }
             if (!checkbox) checkbox = itemRow.querySelector('td:first-child input[type="checkbox"]');
+            
+            // 为复选框补充id/name和label（解决表单提示）
+            if (checkbox) {
+                const checkboxId = `checkbox-${itemRow.getAttribute('data-row-key') || cancelCount}`;
+                if (!checkbox.id) checkbox.id = checkboxId;
+                if (!checkbox.name) checkbox.name = checkboxId;
+                
+                // 检查是否有关联label，无则创建
+                if (!document.querySelector(`label[for="${checkboxId}"]`)) {
+                    const label = document.createElement('label');
+                    label.htmlFor = checkboxId;
+                    label.style.display = 'none'; // 隐藏label，不影响页面布局
+                    itemRow.appendChild(label);
+                }
+            }
+
             if (!checkbox || !checkbox.checked) continue;
 
             checkbox.checked = false;
@@ -182,14 +206,21 @@
         return cancelCount;
     }
 
-    // ===================== 按钮创建&管理（核心修复） =====================
+    // ===================== 按钮创建&管理（修复表单提示） =====================
     function createButton(id, text, style, clickHandler) {
-        // 先移除旧按钮（避免重复创建）
+        // 先移除旧按钮和关联label（避免重复创建）
         const oldBtn = document.getElementById(id);
         if (oldBtn) oldBtn.remove();
+        const oldLabel = document.querySelector(`label[for="${id}"]`);
+        if (oldLabel) oldLabel.remove();
 
         const btn = document.createElement('button');
         btn.id = id;
+        // 补充name属性（解决"A form field element should have an id or name attribute"提示）
+        btn.name = id;
+        // 标记为按钮类型（避免被识别为默认表单提交按钮）
+        btn.type = 'button';
+        
         btn.innerText = text;
         // 增强样式优先级：用GM_addStyle定义全局样式，避免被页面覆盖
         GM_addStyle(`
@@ -212,10 +243,20 @@
                 -webkit-user-select: none !important;
                 box-sizing: content-box !important;
             }
+            /* 隐藏关联的label，不影响页面布局 */
+            label[for="${id}"] {
+                display: none !important;
+            }
         `);
         // 追加个性化样式
         btn.style = style;
         btn.dataset.tampermonkey = 'true';
+
+        // 创建关联的label（解决"No label associated with a form field"提示）
+        const label = document.createElement('label');
+        label.htmlFor = id;
+        label.textContent = text; // 匹配按钮文本，提升可访问性
+        label.dataset.tampermonkey = 'true';
 
         btn.addEventListener('click', async function() {
             clickHandler.call(this);
@@ -223,8 +264,9 @@
 
         // 挂载到安全节点（body容错性更高）
         const mountNode = getSafeMountNode();
-        mountNode.appendChild(btn);
-        console.log(`✅ ${text}按钮已创建并挂载到${mountNode.tagName}节点`);
+        mountNode.appendChild(label); // 先挂载label
+        mountNode.appendChild(btn);   // 再挂载按钮
+        console.log(`✅ ${text}按钮（含关联label）已创建并挂载到${mountNode.tagName}节点`);
         return btn;
     }
 
@@ -329,7 +371,7 @@
         }, 1000); // 延长检查间隔，降低性能消耗
     }
 
-    // ===================== 初始化（核心修复） =====================
+    // ===================== 初始化 =====================
     function init() {
         console.log('🔧 开始初始化按钮...');
         // 确保DOM完全就绪后创建按钮
