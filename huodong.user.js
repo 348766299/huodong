@@ -1,22 +1,21 @@
 // ==UserScript==
 // @name         Temu服装活动报名（价格填充+取消勾选）
 // @namespace    http://tampermonkey.net/
-// @version      1.2
+// @version      1.3
 // @description  仅点击按钮填充申报价格（无对应货号默认填999）+取消含价格提示的商品勾选（按钮移至右上角）
 // @author       悟
 // @match        https://agentseller.temu.com/activity/*
 // @grant        GM_addStyle
-// @run-at       document-end
-// @updateURL    https://raw.githubusercontent.com/348766299/huodong/main/huodong.user.js  // 油猴检测更新的链接
-// @downloadURL  https://raw.githubusercontent.com/348766299/temu-sales/main/huodong.user.js  // 油猴下载新版本的链接
-// @homepageURL  https://github.com/348766299/huodong  // 脚本的GitHub仓库主页（可选）
+// @run-at       document-idle  // 改为idle确保DOM完全加载
+// @updateURL    https://raw.githubusercontent.com/348766299/huodong/main/huodong.user.js
+// @downloadURL  https://raw.githubusercontent.com/348766299/temu-sales/main/huodong.user.js
+// @homepageURL  https://github.com/348766299/huodong
 // ==/UserScript==
 
 (function() {
     'use strict';
 
-    // ===================== 第一部分：价格填充核心配置 =====================
-    // 货号与申报价格映射表（可动态修改）
+    // ===================== 核心配置 =====================
     let skuPriceMap = {
         'TX003': 34, 'TX001': 26, 'TX007': 29, 'TX018': 19, 'TX019': 19,
         'TX005': 27, 'TX029': 29, 'TX016': 22, 'TX004': 20, 'TX131': 26,
@@ -43,17 +42,19 @@
         'JQ004': 22, 'JQ005': 30, 'JQ006': 26
     };
 
-    // 手动修改标记系统（避免自动填充覆盖手动修改）
     const manualEditedInputs = new WeakSet();
-    // 按钮状态&监听变量
     let isPriceFilling = false;
     let isCheckCanceling = false;
     let btnObserver = null;
-    // 默认填充价格（无对应货号时使用）
     const DEFAULT_PRICE = 999;
 
+    // ===================== 工具函数：确保节点存在 =====================
+    function getSafeMountNode() {
+        // 优先用body，容错性更高；html节点可能未就绪
+        return document.body || document.querySelector('html') || document.documentElement;
+    }
+
     // ===================== 价格填充核心函数 =====================
-    // 高级输入处理（模拟原生输入，适配框架监听）
     function handleInputAutoFill(input, price) {
         if (manualEditedInputs.has(input)) return;
 
@@ -72,7 +73,6 @@
         }, 50);
     }
 
-    // 监听手动修改事件（标记手动修改的输入框）
     document.addEventListener('input', (e) => {
         const target = e.target;
         if (target.matches('input[currency="CNY"][data-testid="beast-core-inputNumber-htmlInput"]')) {
@@ -80,17 +80,14 @@
         }
     }, true);
 
-    // 动态更新映射表（可全局调用）
     window.updateSkuPrice = (sku, newPrice) => {
         skuPriceMap[sku] = newPrice;
         scanAndFillPrices(true);
     };
 
-    // 核心扫描填充逻辑（仅按钮触发，无货号默认填999）
     function scanAndFillPrices(force = false) {
         let fillCount = 0;
-        let defaultFillCount = 0; // 统计默认填充999的数量
-        // 遍历货号元素
+        let defaultFillCount = 0;
         document.querySelectorAll('[data-testid="beast-core-box"]').forEach(skuElement => {
             const skuText = skuElement.textContent;
             const skuMatch = skuText.match(/货号:\s*(\S+)/);
@@ -98,13 +95,11 @@
             if (skuMatch) {
                 const sku = skuMatch[1];
                 const row = skuElement.closest('tr');
-                const mainInput = row.querySelector('input[currency="CNY"]'); // 申报价格输入框
-                const secondaryInput = row.querySelector('input[min][max]'); // 副输入框
+                const mainInput = row.querySelector('input[currency="CNY"]');
+                const secondaryInput = row.querySelector('input[min][max]');
 
-                // 填充主输入框（申报价格：有货号用对应价，无货号用默认999）
                 if (mainInput) {
                     const initializationFlag = 'priceInitialized';
-                    // 核心修改：无对应货号时赋值为DEFAULT_PRICE(999)
                     let price = skuPriceMap[sku];
                     if (price === undefined) {
                         price = DEFAULT_PRICE;
@@ -118,7 +113,6 @@
                     }
                 }
 
-                // 填充副输入框（固定100）
                 if (secondaryInput) {
                     const initializationFlag = 'fixedInitialized';
                     if (force || !secondaryInput.dataset[initializationFlag]) {
@@ -128,13 +122,11 @@
                 }
             }
         });
-        // 控制台打印填充统计
         console.log(`📊 价格填充统计：总填充${fillCount}个，其中默认999填充${defaultFillCount}个`);
         return fillCount;
     }
 
     // ===================== 取消勾选核心函数 =====================
-    // 递归查找包含指定文本列表的元素
     function findElementsWithAnyText(textList) {
         const results = [];
         function traverse(node) {
@@ -151,12 +143,10 @@
         return results;
     }
 
-    // 取消违规商品勾选
     async function autoUncheckInvalidItems() {
         let cancelCount = 0;
         const targetTextList = ['不可大于参考价格', '输入值需大于0'];
 
-        // 查找违规提示元素
         const baseErrorElements = document.querySelectorAll(
             'div.ant-form-explain, span.ant-form-item-explain-error, div[style*="color:red"], span[style*="red"]'
         );
@@ -167,9 +157,7 @@
         const allTextMatchedElements = findElementsWithAnyText(targetTextList);
         const allValidErrorTips = [...new Set([...validBaseErrors, ...allTextMatchedElements])];
 
-        // 遍历违规提示，取消对应勾选
         for (const tip of allValidErrorTips) {
-            // 找商品行（TR）
             let itemRow = tip;
             for (let i = 0; i < 15; i++) {
                 if (!itemRow || itemRow.tagName === 'TR') break;
@@ -177,7 +165,6 @@
             }
             if (!itemRow || itemRow.tagName !== 'TR') continue;
 
-            // 找复选框
             let checkbox = itemRow.querySelector('input[type="checkbox"]');
             if (!checkbox) {
                 const wrapper = itemRow.querySelector('.ant-checkbox-wrapper, .ant-checkbox');
@@ -186,7 +173,6 @@
             if (!checkbox) checkbox = itemRow.querySelector('td:first-child input[type="checkbox"]');
             if (!checkbox || !checkbox.checked) continue;
 
-            // 取消勾选（模拟真实操作）
             checkbox.checked = false;
             checkbox.dispatchEvent(new Event('change', { bubbles: true, cancelable: true }));
             const checkboxDom = checkbox.parentElement;
@@ -196,53 +182,58 @@
         return cancelCount;
     }
 
-    // ===================== 按钮创建&管理 =====================
-    // 创建按钮通用函数
+    // ===================== 按钮创建&管理（核心修复） =====================
     function createButton(id, text, style, clickHandler) {
-        let btn = document.getElementById(id);
-        if (btn) return btn;
+        // 先移除旧按钮（避免重复创建）
+        const oldBtn = document.getElementById(id);
+        if (oldBtn) oldBtn.remove();
 
-        btn = document.createElement('button');
+        const btn = document.createElement('button');
         btn.id = id;
         btn.innerText = text;
+        // 增强样式优先级：用GM_addStyle定义全局样式，避免被页面覆盖
+        GM_addStyle(`
+            #${id} {
+                position: fixed !important;
+                top: 20px !important;
+                z-index: 99999999 !important; /* 提升z-index，避免被页面元素覆盖 */
+                width: 180px !important;
+                height: 50px !important;
+                border: 3px solid #fff !important;
+                border-radius: 8px !important;
+                cursor: pointer !important;
+                font-size: 16px !important;
+                font-weight: bold !important;
+                padding: 0 !important;
+                display: block !important;
+                opacity: 1 !important;
+                pointer-events: auto !important;
+                user-select: none !important;
+                -webkit-user-select: none !important;
+                box-sizing: content-box !important;
+            }
+        `);
+        // 追加个性化样式
         btn.style = style;
         btn.dataset.tampermonkey = 'true';
 
-        // 点击事件
         btn.addEventListener('click', async function() {
             clickHandler.call(this);
         });
 
-        // 挂载到html根节点（避免被重渲染删除）
-        document.querySelector('html').appendChild(btn);
-        console.log(`✅ ${text}按钮已创建`);
+        // 挂载到安全节点（body容错性更高）
+        const mountNode = getSafeMountNode();
+        mountNode.appendChild(btn);
+        console.log(`✅ ${text}按钮已创建并挂载到${mountNode.tagName}节点`);
         return btn;
     }
 
-    // 创建填充价格按钮（绿色）- 移至右上角
     function createFillPriceButton() {
         const btnStyle = `
-            position: fixed !important;
-            top: 20px !important;
-            right: 210px !important; /* 与取消勾选按钮错开（右侧间距210px） */
-            z-index: 9999999 !important;
-            width: 180px !important;
-            height: 50px !important;
+            right: 210px !important;
             background: #00cc00 !important;
             color: #ffffff !important;
-            border: 3px solid #fff !important;
-            border-radius: 8px !important;
-            cursor: pointer !important;
-            font-size: 16px !important;
-            font-weight: bold !important;
             box-shadow: 0 0 20px #00cc00 !important;
-            padding: 0 !important;
-            display: block !important;
-            opacity: 1 !important;
-            pointer-events: auto !important;
-            user-select: none !important;
-            -webkit-user-select: none !important;
-            box-sizing: content-box !important;
         `;
 
         return createButton('fillPriceBtn', '填充申报价格', btnStyle, async function() {
@@ -254,7 +245,7 @@
             this.innerText = '填充中...';
 
             try {
-                const fillCount = scanAndFillPrices(true); // 强制填充所有匹配商品
+                const fillCount = scanAndFillPrices(true);
                 alert(`✅ 价格填充完成！共填充${fillCount}个商品的申报价格（无对应货号的商品默认填999）`);
             } catch (error) {
                 console.error('❌ 填充价格出错：', error);
@@ -266,30 +257,12 @@
         });
     }
 
-    // 创建取消勾选按钮（红色）- 移至右上角
     function createCancelCheckButton() {
         const btnStyle = `
-            position: fixed !important;
-            top: 20px !important;
-            right: 20px !important; /* 右侧间距20px（最右侧） */
-            z-index: 9999999 !important;
-            width: 180px !important;
-            height: 50px !important;
+            right: 20px !important;
             background: #ff0000 !important;
             color: #ffffff !important;
-            border: 3px solid #fff !important;
-            border-radius: 8px !important;
-            cursor: pointer !important;
-            font-size: 16px !important;
-            font-weight: bold !important;
             box-shadow: 0 0 20px #ff0000 !important;
-            padding: 0 !important;
-            display: block !important;
-            opacity: 1 !important;
-            pointer-events: auto !important;
-            user-select: none !important;
-            -webkit-user-select: none !important;
-            box-sizing: content-box !important;
         `;
 
         return createButton('cancelCheckBtn', '取消违规商品勾选', btnStyle, async function() {
@@ -317,7 +290,7 @@
         });
     }
 
-    // 监听按钮是否被移除（重建保障）
+    // 修复监听逻辑：监听body节点（按钮挂载到body）
     function watchButtons() {
         if (btnObserver) btnObserver.disconnect();
         btnObserver = new MutationObserver((mutations) => {
@@ -327,40 +300,60 @@
                     for (let node of mutation.removedNodes) {
                         if (removedIds.includes(node.id)) {
                             console.log(`⚠️ ${node.id}按钮被移除，重建！`);
-                            node.id === 'fillPriceBtn' ? createFillPriceButton() : createCancelCheckButton();
+                            setTimeout(() => {
+                                node.id === 'fillPriceBtn' ? createFillPriceButton() : createCancelCheckButton();
+                            }, 100); // 延迟重建，避免冲突
                             return;
                         }
                     }
                 }
             });
         });
-        btnObserver.observe(document.querySelector('html'), { childList: true, subtree: false });
+        // 监听body的子节点变化（包含按钮挂载/移除）
+        btnObserver.observe(getSafeMountNode(), { childList: true, subtree: false });
     }
 
-    // 定时检查按钮是否存在
     function checkButtonsExist() {
         setInterval(() => {
-            if (!document.getElementById('fillPriceBtn')) createFillPriceButton();
-            if (!document.getElementById('cancelCheckBtn')) createCancelCheckButton();
-        }, 500);
+            const mountNode = getSafeMountNode();
+            if (!mountNode) return; // 容错：节点未就绪时跳过
+
+            if (!document.getElementById('fillPriceBtn')) {
+                console.log('⚠️ 填充价格按钮不存在，重建！');
+                createFillPriceButton();
+            }
+            if (!document.getElementById('cancelCheckBtn')) {
+                console.log('⚠️ 取消勾选按钮不存在，重建！');
+                createCancelCheckButton();
+            }
+        }, 1000); // 延长检查间隔，降低性能消耗
     }
 
-    // ===================== 初始化 =====================
+    // ===================== 初始化（核心修复） =====================
     function init() {
-        // 创建两个按钮
+        console.log('🔧 开始初始化按钮...');
+        // 确保DOM完全就绪后创建按钮
+        if (document.readyState !== 'complete') {
+            console.log('🔧 DOM未完全加载，延迟初始化...');
+            setTimeout(init, 500);
+            return;
+        }
+
+        // 创建按钮
         createFillPriceButton();
         createCancelCheckButton();
-        // 监听按钮移除
+        // 启动监听
         watchButtons();
-        // 定时检查按钮
+        // 启动定时检查
         checkButtonsExist();
+        console.log('✅ 按钮初始化完成！');
     }
 
-    // 启动所有功能（仅初始化按钮，不自动填充价格）
-    init();
-    document.addEventListener('DOMContentLoaded', init);
-    window.addEventListener('load', init);
-    setTimeout(init, 100);
-
+    // 仅在DOM完全加载后执行初始化（避免提前执行）
+    if (document.readyState === 'complete') {
+        init();
+    } else {
+        window.addEventListener('load', init); // 等待页面所有资源加载完成
+    }
 
 })();
