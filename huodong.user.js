@@ -1,12 +1,12 @@
 // ==UserScript==
 // @name         Temu服装活动报名（价格填充+取消勾选）
 // @namespace    http://tampermonkey.net/
-// @version      1.4
+// @version      1.5
 // @description  仅点击按钮填充申报价格（无对应货号默认填999）+取消含价格提示的商品勾选（按钮移至右上角）
 // @author       悟
 // @match        https://agentseller.temu.com/activity/*
 // @grant        GM_addStyle
-// @run-at       document-idle  // 改为idle确保DOM完全加载
+// @run-at       document-end  // 调整执行时机，比idle更稳定
 // @updateURL    https://raw.githubusercontent.com/348766299/huodong/main/huodong.user.js
 // @downloadURL  https://raw.githubusercontent.com/348766299/temu-sales/main/huodong.user.js
 // @homepageURL  https://github.com/348766299/huodong
@@ -46,15 +46,20 @@
     let isPriceFilling = false;
     let isCheckCanceling = false;
     let btnObserver = null;
+    let pageContentObserver = null; // 新增：监听页面内容加载
     const DEFAULT_PRICE = 999;
 
     // ===================== 工具函数：确保节点存在 =====================
     function getSafeMountNode() {
-        // 优先用body，容错性更高；html节点可能未就绪
-        return document.body || document.querySelector('html') || document.documentElement;
+        return document.body || document.documentElement;
     }
 
-    // ===================== 价格填充核心函数 =====================
+    // ===================== 新增：调试日志函数 =====================
+    function logDebug(msg) {
+        console.log(`[Temu脚本调试] ${new Date().toLocaleTimeString()}：${msg}`);
+    }
+
+    // ===================== 价格填充核心函数（无修改） =====================
     function handleInputAutoFill(input, price) {
         if (manualEditedInputs.has(input)) return;
 
@@ -99,7 +104,6 @@
                 const secondaryInput = row.querySelector('input[min][max]');
 
                 if (mainInput) {
-                    // 为页面原有输入框补充id/name（解决表单提示）
                     if (!mainInput.id) mainInput.id = `price-input-${sku}`;
                     if (!mainInput.name) mainInput.name = `price-input-${sku}`;
                     
@@ -118,7 +122,6 @@
                 }
 
                 if (secondaryInput) {
-                    // 为页面原有输入框补充id/name（解决表单提示）
                     if (!secondaryInput.id) secondaryInput.id = `secondary-input-${sku}`;
                     if (!secondaryInput.name) secondaryInput.name = `secondary-input-${sku}`;
                     
@@ -130,11 +133,11 @@
                 }
             }
         });
-        console.log(`📊 价格填充统计：总填充${fillCount}个，其中默认999填充${defaultFillCount}个`);
+        logDebug(`价格填充统计：总填充${fillCount}个，其中默认999填充${defaultFillCount}个`);
         return fillCount;
     }
 
-    // ===================== 取消勾选核心函数 =====================
+    // ===================== 取消勾选核心函数（无修改） =====================
     function findElementsWithAnyText(textList) {
         const results = [];
         function traverse(node) {
@@ -180,17 +183,15 @@
             }
             if (!checkbox) checkbox = itemRow.querySelector('td:first-child input[type="checkbox"]');
             
-            // 为复选框补充id/name和label（解决表单提示）
             if (checkbox) {
                 const checkboxId = `checkbox-${itemRow.getAttribute('data-row-key') || cancelCount}`;
                 if (!checkbox.id) checkbox.id = checkboxId;
                 if (!checkbox.name) checkbox.name = checkboxId;
                 
-                // 检查是否有关联label，无则创建
                 if (!document.querySelector(`label[for="${checkboxId}"]`)) {
                     const label = document.createElement('label');
                     label.htmlFor = checkboxId;
-                    label.style.display = 'none'; // 隐藏label，不影响页面布局
+                    label.style.display = 'none';
                     itemRow.appendChild(label);
                 }
             }
@@ -206,9 +207,9 @@
         return cancelCount;
     }
 
-    // ===================== 按钮创建&管理（修复表单提示） =====================
+    // ===================== 按钮创建&管理（关键修改） =====================
     function createButton(id, text, style, clickHandler) {
-        // 先移除旧按钮和关联label（避免重复创建）
+        // 先移除旧按钮和关联label
         const oldBtn = document.getElementById(id);
         if (oldBtn) oldBtn.remove();
         const oldLabel = document.querySelector(`label[for="${id}"]`);
@@ -216,18 +217,17 @@
 
         const btn = document.createElement('button');
         btn.id = id;
-        // 补充name属性（解决"A form field element should have an id or name attribute"提示）
         btn.name = id;
-        // 标记为按钮类型（避免被识别为默认表单提交按钮）
         btn.type = 'button';
-        
         btn.innerText = text;
-        // 增强样式优先级：用GM_addStyle定义全局样式，避免被页面覆盖
+        
+        // 关键修改：增强样式，确保按钮绝对可见（调整top/right，增加边框/透明度，提升z-index）
         GM_addStyle(`
             #${id} {
                 position: fixed !important;
-                top: 20px !important;
-                z-index: 99999999 !important; /* 提升z-index，避免被页面元素覆盖 */
+                top: 80px !important; /* 从20px调整到80px，避免被页面顶部导航覆盖 */
+                right: ${id === 'fillPriceBtn' ? '210px' : '20px'} !important;
+                z-index: 999999999 !important; /* 进一步提升z-index */
                 width: 180px !important;
                 height: 50px !important;
                 border: 3px solid #fff !important;
@@ -242,43 +242,46 @@
                 user-select: none !important;
                 -webkit-user-select: none !important;
                 box-sizing: content-box !important;
+                background: ${id === 'fillPriceBtn' ? '#00cc00 !important' : '#ff0000 !important'};
+                color: #ffffff !important;
+                box-shadow: 0 0 20px ${id === 'fillPriceBtn' ? '#00cc00 !important' : '#ff0000 !important'};
             }
-            /* 隐藏关联的label，不影响页面布局 */
+            #${id}:hover {
+                opacity: 0.9 !important;
+                transform: scale(1.05) !important; /* 增加hover效果，方便确认按钮存在 */
+            }
             label[for="${id}"] {
                 display: none !important;
             }
         `);
-        // 追加个性化样式
-        btn.style = style;
+        
         btn.dataset.tampermonkey = 'true';
 
-        // 创建关联的label（解决"No label associated with a form field"提示）
+        // 创建关联的label
         const label = document.createElement('label');
         label.htmlFor = id;
-        label.textContent = text; // 匹配按钮文本，提升可访问性
+        label.textContent = text;
         label.dataset.tampermonkey = 'true';
 
         btn.addEventListener('click', async function() {
             clickHandler.call(this);
         });
 
-        // 挂载到安全节点（body容错性更高）
+        // 挂载到body
         const mountNode = getSafeMountNode();
-        mountNode.appendChild(label); // 先挂载label
-        mountNode.appendChild(btn);   // 再挂载按钮
-        console.log(`✅ ${text}按钮（含关联label）已创建并挂载到${mountNode.tagName}节点`);
+        mountNode.appendChild(label);
+        mountNode.appendChild(btn);
+        logDebug(`${text}按钮已创建并挂载到${mountNode.tagName}节点`);
+        
+        // 新增：强制显示按钮（防止被页面样式隐藏）
+        btn.style.display = 'block !important';
+        btn.style.visibility = 'visible !important';
+        
         return btn;
     }
 
     function createFillPriceButton() {
-        const btnStyle = `
-            right: 210px !important;
-            background: #00cc00 !important;
-            color: #ffffff !important;
-            box-shadow: 0 0 20px #00cc00 !important;
-        `;
-
-        return createButton('fillPriceBtn', '填充申报价格', btnStyle, async function() {
+        return createButton('fillPriceBtn', '填充申报价格', '', async function() {
             if (isPriceFilling) {
                 alert('正在填充价格中，请勿重复点击！');
                 return;
@@ -290,7 +293,7 @@
                 const fillCount = scanAndFillPrices(true);
                 alert(`✅ 价格填充完成！共填充${fillCount}个商品的申报价格（无对应货号的商品默认填999）`);
             } catch (error) {
-                console.error('❌ 填充价格出错：', error);
+                logDebug(`填充价格出错：${error.message}`);
                 alert(`❌ 填充价格出错：${error.message}`);
             } finally {
                 isPriceFilling = false;
@@ -300,14 +303,7 @@
     }
 
     function createCancelCheckButton() {
-        const btnStyle = `
-            right: 20px !important;
-            background: #ff0000 !important;
-            color: #ffffff !important;
-            box-shadow: 0 0 20px #ff0000 !important;
-        `;
-
-        return createButton('cancelCheckBtn', '取消违规商品勾选', btnStyle, async function() {
+        return createButton('cancelCheckBtn', '取消违规商品勾选', '', async function() {
             if (isCheckCanceling) {
                 alert('正在取消勾选中，请勿重复点击！');
                 return;
@@ -323,7 +319,7 @@
                     alert(`✅ 取消勾选完成！共取消${cancelCount}个违规商品勾选`);
                 }
             } catch (error) {
-                console.error('❌ 取消勾选出错：', error);
+                logDebug(`取消勾选出错：${error.message}`);
                 alert(`❌ 取消勾选出错：${error.message}`);
             } finally {
                 isCheckCanceling = false;
@@ -332,7 +328,7 @@
         });
     }
 
-    // 修复监听逻辑：监听body节点（按钮挂载到body）
+    // ===================== 监听逻辑优化 =====================
     function watchButtons() {
         if (btnObserver) btnObserver.disconnect();
         btnObserver = new MutationObserver((mutations) => {
@@ -341,61 +337,88 @@
                     const removedIds = ['fillPriceBtn', 'cancelCheckBtn'];
                     for (let node of mutation.removedNodes) {
                         if (removedIds.includes(node.id)) {
-                            console.log(`⚠️ ${node.id}按钮被移除，重建！`);
+                            logDebug(`${node.id}按钮被移除，重建！`);
                             setTimeout(() => {
                                 node.id === 'fillPriceBtn' ? createFillPriceButton() : createCancelCheckButton();
-                            }, 100); // 延迟重建，避免冲突
+                            }, 100);
                             return;
                         }
                     }
                 }
             });
         });
-        // 监听body的子节点变化（包含按钮挂载/移除）
-        btnObserver.observe(getSafeMountNode(), { childList: true, subtree: false });
+        btnObserver.observe(getSafeMountNode(), { childList: true, subtree: true }); // 调整为subtree: true
+    }
+
+    // 新增：监听页面核心内容加载，确保按钮在内容渲染后创建
+    function watchPageContent() {
+        if (pageContentObserver) pageContentObserver.disconnect();
+        
+        // 监听页面中关键节点（商品表格/活动内容）的加载
+        pageContentObserver = new MutationObserver((mutations) => {
+            const hasActivityContent = document.querySelector('tr[data-row-key]') || 
+                                      document.querySelector('input[currency="CNY"]') ||
+                                      document.querySelector('.ant-checkbox-wrapper');
+            
+            if (hasActivityContent) {
+                logDebug('检测到页面活动内容加载完成，创建/检查按钮');
+                createFillPriceButton();
+                createCancelCheckButton();
+                pageContentObserver.disconnect(); // 找到内容后停止监听
+            }
+        });
+        
+        // 监听整个文档的子节点变化
+        pageContentObserver.observe(document.documentElement, {
+            childList: true,
+            subtree: true,
+            attributes: false
+        });
     }
 
     function checkButtonsExist() {
         setInterval(() => {
             const mountNode = getSafeMountNode();
-            if (!mountNode) return; // 容错：节点未就绪时跳过
+            if (!mountNode) return;
 
             if (!document.getElementById('fillPriceBtn')) {
-                console.log('⚠️ 填充价格按钮不存在，重建！');
+                logDebug('填充价格按钮不存在，重建！');
                 createFillPriceButton();
             }
             if (!document.getElementById('cancelCheckBtn')) {
-                console.log('⚠️ 取消勾选按钮不存在，重建！');
+                logDebug('取消勾选按钮不存在，重建！');
                 createCancelCheckButton();
             }
-        }, 1000); // 延长检查间隔，降低性能消耗
+        }, 2000); // 调整为2秒，降低性能消耗
     }
 
-    // ===================== 初始化 =====================
+    // ===================== 初始化逻辑重构 =====================
     function init() {
-        console.log('🔧 开始初始化按钮...');
-        // 确保DOM完全就绪后创建按钮
-        if (document.readyState !== 'complete') {
-            console.log('🔧 DOM未完全加载，延迟初始化...');
-            setTimeout(init, 500);
-            return;
-        }
-
-        // 创建按钮
+        logDebug('开始初始化脚本');
+        
+        // 1. 先创建按钮（保底）
         createFillPriceButton();
         createCancelCheckButton();
-        // 启动监听
+        
+        // 2. 启动按钮监听
         watchButtons();
-        // 启动定时检查
+        
+        // 3. 启动页面内容监听（核心新增）
+        watchPageContent();
+        
+        // 4. 启动定时检查
         checkButtonsExist();
-        console.log('✅ 按钮初始化完成！');
+        
+        logDebug('脚本初始化完成');
     }
 
-    // 仅在DOM完全加载后执行初始化（避免提前执行）
-    if (document.readyState === 'complete') {
-        init();
+    // 最终初始化：兼容SPA页面
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', init);
     } else {
-        window.addEventListener('load', init); // 等待页面所有资源加载完成
+        // 立即执行+延迟执行（防止SPA页面还没渲染内容）
+        init();
+        setTimeout(init, 1000);
     }
 
 })();
