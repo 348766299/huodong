@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Temu服装活动报名（价格填充+取消勾选）
 // @namespace    http://tampermonkey.net/
-// @version      1.7.0
+// @version      2.0
 // @description  仅点击按钮填充申报价格（无对应货号默认填999）+取消含价格提示的商品勾选（按钮移至右上角）+补充库存填充
 // @author       悟
 // @match        https://agentseller.temu.com/activity/*
@@ -85,6 +85,21 @@
         return true;
     }
 
+    // 查找包含指定文本的元素（原生JS实现contains功能）
+    function findElementsContainingText(tagNames, text) {
+        const elements = [];
+        // 遍历指定标签类型
+        tagNames.forEach(tag => {
+            const allElements = document.getElementsByTagName(tag);
+            for (let el of allElements) {
+                if (el.textContent && el.textContent.includes(text)) {
+                    elements.push(el);
+                }
+            }
+        });
+        return elements;
+    }
+
     // 监听手动修改事件（标记手动修改的输入框）
     document.addEventListener('input', (e) => {
         const target = e.target;
@@ -106,10 +121,17 @@
         let stockFillCount = 0;
         let defaultPriceCount = 0;
         
-        // 扩大元素查找范围，适配不同页面结构
-        const skuElements = document.querySelectorAll(
-            '[data-testid="beast-core-box"], div:contains("货号"), td:contains("货号"), span:contains("货号")'
-        );
+        // 修复：使用原生JS替代jQuery的:contains选择器
+        // 1. 先获取标准选择器的元素
+        const baseSkuElements = document.querySelectorAll('[data-testid="beast-core-box"]');
+        // 2. 再查找包含"货号"文本的元素
+        const textBasedSkuElements = [
+            ...findElementsContainingText(['div'], '货号'),
+            ...findElementsContainingText(['td'], '货号'),
+            ...findElementsContainingText(['span'], '货号')
+        ];
+        // 3. 合并并去重
+        const skuElements = [...new Set([...baseSkuElements, ...textBasedSkuElements])];
 
         if (skuElements.length === 0) {
             console.warn('⚠️ 未找到货号相关元素');
