@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Temu服装活动报名（价格填充+取消勾选）
 // @namespace    http://tampermonkey.net/
-// @version      2.0
-// @description  仅点击按钮填充申报价格（无对应货号默认填999）+取消含价格提示的商品勾选（按钮移至右上角）+补充库存填充
+// @version      2.1
+// @description  适配最新页面结构 - 填充申报价格（无对应货号默认填999）+取消含价格提示的商品勾选
 // @author       悟
 // @match        https://agentseller.temu.com/activity/*
 // @grant        GM_addStyle
@@ -15,8 +15,7 @@
 (function() {
     'use strict';
 
-    // ===================== 第一部分：核心配置 =====================
-    // 货号与申报价格映射表（可动态修改）
+    // ===================== 核心配置 =====================
     let skuPriceMap = {
         'TX003': 34, 'TX001': 26, 'TX007': 29, 'TX018': 19, 'TX019': 19,
         'TX005': 27, 'TX029': 29, 'TX016': 22, 'TX004': 20, 'TX131': 26,
@@ -41,122 +40,120 @@
         'TM129': 34, 'TM130': 34, 'TM050': 29, 'TM051': 29, 'TM052': 29,
         'JQ001': 22, 'JQ008': 22, 'JQ002': 22, 'JQ002-2': 22, 'JQ003': 20.22,
         'JQ010': 26,'JQ011': 26,'JQ021': 22,'JQ020': 22,
-        'JQ004': 22, 'JQ005': 30, 'JQ006': 26, 'JQ007': 20.22, 'JQ009': 22
+        'JQ004': 22, 'JQ005': 30, 'JQ006': 26, 'JQ007': 20.22, 'JQ009': 22,
+        'TX229': 32
     };
 
-    // 库存默认值（可根据需求修改）
-    const DEFAULT_STOCK = 9999;
-    // 默认填充价格（无对应货号时使用）
+    // 🔥 修复1：库存默认值改为100
+    const DEFAULT_STOCK = 100;
     const DEFAULT_PRICE = 999;
-
-    // 手动修改标记系统（避免自动填充覆盖手动修改）
     const manualEditedInputs = new WeakSet();
-    // 按钮状态&监听变量
     let isPriceFilling = false;
     let isCheckCanceling = false;
     let btnObserver = null;
 
     // ===================== 核心工具函数 =====================
-    // 增强版输入模拟（适配React/Vue等框架）
+    // 增强版输入模拟
     function setInputValue(input, value) {
         if (!input || manualEditedInputs.has(input)) return false;
 
-        // 聚焦输入框
+        // 强制聚焦并清空
         input.focus();
-        
-        // 清空原有值
         input.value = '';
         input.dispatchEvent(new Event('input', { bubbles: true }));
-        
-        // 设置新值
+
+        // 原生赋值（适配React）
         const nativeInputValueSetter = Object.getOwnPropertyDescriptor(
             HTMLInputElement.prototype, 'value'
         ).set;
         nativeInputValueSetter.call(input, value);
-        
+
         // 触发所有必要事件
         input.dispatchEvent(new Event('input', { bubbles: true, cancelable: true }));
         input.dispatchEvent(new Event('change', { bubbles: true, cancelable: true }));
         input.dispatchEvent(new Event('blur', { bubbles: true }));
-        
-        // 失焦
         input.blur();
-        
+
         return true;
     }
 
-    // 查找包含指定文本的元素（原生JS实现contains功能）
-    function findElementsContainingText(tagNames, text) {
-        const elements = [];
-        // 遍历指定标签类型
-        tagNames.forEach(tag => {
-            const allElements = document.getElementsByTagName(tag);
-            for (let el of allElements) {
-                if (el.textContent && el.textContent.includes(text)) {
-                    elements.push(el);
-                }
-            }
-        });
-        return elements;
+    // 🔥 修复2：货号匹配改为严格5位数（前缀2位+数字3位）
+    // 匹配规则：TX/JQ/TM开头 + 3位数字（支持JQ002-2这类扩展格式）
+    function extractSkuFromText(text) {
+        // 严格匹配：前缀(TX/JQ/TM) + 3位数字（可选-后缀）
+        const skuRegex = /(TX|JQ|TM)\d{3}(-\d+)?/g;
+        const matches = text.match(skuRegex);
+        return matches ? matches[0] : null;
     }
 
-    // 监听手动修改事件（标记手动修改的输入框）
+    // 监听手动修改
     document.addEventListener('input', (e) => {
         const target = e.target;
-        // 匹配价格/库存输入框
         if (target.matches('input[currency="CNY"], input[min][max], input[type="number"]')) {
             manualEditedInputs.add(target);
         }
     }, true);
 
-    // 动态更新映射表（可全局调用）
     window.updateSkuPrice = (sku, newPrice) => {
         skuPriceMap[sku] = newPrice;
         scanAndFillPrices(true);
     };
 
-    // ===================== 价格+库存填充核心函数 =====================
+    // ===================== 价格+库存填充核心 =====================
     function scanAndFillPrices(force = false) {
         let priceFillCount = 0;
         let stockFillCount = 0;
         let defaultPriceCount = 0;
-        
-        // 修复：使用原生JS替代jQuery的:contains选择器
-        // 1. 先获取标准选择器的元素
-        const baseSkuElements = document.querySelectorAll('[data-testid="beast-core-box"]');
-        // 2. 再查找包含"货号"文本的元素
-        const textBasedSkuElements = [
-            ...findElementsContainingText(['div'], '货号'),
-            ...findElementsContainingText(['td'], '货号'),
-            ...findElementsContainingText(['span'], '货号')
-        ];
-        // 3. 合并并去重
-        const skuElements = [...new Set([...baseSkuElements, ...textBasedSkuElements])];
 
-        if (skuElements.length === 0) {
-            console.warn('⚠️ 未找到货号相关元素');
+        // 1. 获取所有货号元素（页面中是data-testid="beast-core-box"）
+        const skuBoxElements = document.querySelectorAll('[data-testid="beast-core-box"]');
+
+        if (skuBoxElements.length === 0) {
+            console.warn('⚠️ 未找到货号盒子元素');
             return { priceFillCount, stockFillCount };
         }
 
-        skuElements.forEach(skuElement => {
-            const skuText = skuElement.textContent || skuElement.innerText;
-            const skuMatch = skuText.match(/货号:\s*(\S+)/);
-            
-            if (!skuMatch) return;
-            const sku = skuMatch[1].trim();
-            
-            // 查找商品行（增强层级查找）
-            let row = skuElement.closest('tr');
-            if (!row) row = skuElement.closest('div[class*="row"], div[class*="item"]');
-            if (!row) return;
+        // 2. 遍历每个货号元素
+        skuBoxElements.forEach(skuBox => {
+            const boxText = skuBox.textContent.trim();
+            const sku = extractSkuFromText(boxText);
 
-            // ===== 填充申报价格 =====
-            // 多选择器匹配价格输入框
-            const priceInputs = row.querySelectorAll(
-                'input[currency="CNY"], input[data-testid*="price"], input[placeholder*="价格"], input[name*="price"], input[type="number"][class*="price"]'
-            );
-            
-            const priceInput = priceInputs.length > 0 ? priceInputs[0] : null;
+            if (!sku) {
+                console.log(`⚠️ 未从文本中提取到5位数货号：${boxText}`);
+                return;
+            }
+
+            console.log(`✅ 找到5位数货号：${sku}`);
+
+            // 3. 找到当前货号所在的TD单元格
+            const skuTd = skuBox.closest('td[data-testid="beast-core-table-td"]');
+            if (!skuTd) {
+                console.warn('⚠️ 未找到货号所在的TD单元格');
+                return;
+            }
+
+            // 4. 找到同一行的其他TD（价格输入框所在的TD）
+            let priceInput = null;
+            const parentTr = skuTd.closest('tr');
+
+            if (parentTr) {
+                // 查找当前行所有包含价格输入框的TD
+                const allTds = parentTr.querySelectorAll('td[data-testid="beast-core-table-td"]');
+                allTds.forEach(td => {
+                    const input = td.querySelector('input[currency="CNY"][data-testid="beast-core-inputNumber-htmlInput"]');
+                    if (input) priceInput = input;
+                });
+            }
+
+            // 降级方案：如果方案1没找到，向上查找整个表格的价格输入框
+            if (!priceInput) {
+                // 找到页面中所有价格输入框
+                const allPriceInputs = document.querySelectorAll('input[currency="CNY"][data-testid="beast-core-inputNumber-htmlInput"]');
+                // 取第一个可用的，或按位置匹配
+                priceInput = allPriceInputs[Array.from(skuBoxElements).indexOf(skuBox)] || allPriceInputs[0];
+            }
+
+            // 5. 填充价格
             if (priceInput) {
                 const initializationFlag = 'priceInitialized';
                 if (force || !priceInput.dataset[initializationFlag]) {
@@ -165,37 +162,49 @@
                         priceFillCount++;
                         priceInput.dataset[initializationFlag] = 'true';
                         if (price === DEFAULT_PRICE) defaultPriceCount++;
+                        console.log(`✅ 为${sku}填充价格：${price}`);
                     }
                 }
+            } else {
+                console.warn(`⚠️ 未找到${sku}对应的价格输入框`);
             }
 
-            // ===== 填充库存 =====
-            // 多选择器匹配库存输入框
-            const stockInputs = row.querySelectorAll(
-                'input[min][max], input[data-testid*="stock"], input[placeholder*="库存"], input[name*="stock"], input[type="number"][class*="stock"]'
-            );
-            
-            const stockInput = stockInputs.length > 0 ? stockInputs[0] : null;
+            // 6. 填充库存（适配你提供的库存元素结构）
+            let stockInput = null;
+            if (parentTr) {
+                // 🔥 优化：精准匹配库存输入框（根据你提供的元素特征）
+                stockInput = parentTr.querySelector('input[min="0"][max="99999999"][placeholder="请输入"][data-testid="beast-core-inputNumber-htmlInput"]:not([currency="CNY"])');
+            }
+
+            // 降级方案：全局查找库存输入框（排除价格输入框）
+            if (!stockInput) {
+                const allStockInputs = document.querySelectorAll('input[min="0"][max="99999999"][placeholder="请输入"][data-testid="beast-core-inputNumber-htmlInput"]:not([currency="CNY"])');
+                stockInput = allStockInputs[Array.from(skuBoxElements).indexOf(skuBox)] || allStockInputs[0];
+            }
+
             if (stockInput) {
                 const initializationFlag = 'stockInitialized';
                 if (force || !stockInput.dataset[initializationFlag]) {
+                    // 使用修改后的默认值100
                     if (setInputValue(stockInput, DEFAULT_STOCK)) {
                         stockFillCount++;
                         stockInput.dataset[initializationFlag] = 'true';
+                        console.log(`✅ 为${sku}填充库存：${DEFAULT_STOCK}`);
                     }
                 }
+            } else {
+                console.warn(`⚠️ 未找到${sku}对应的库存输入框`);
             }
         });
 
-        // 控制台打印填充统计
         console.log(`📊 填充统计：
           - 价格填充：${priceFillCount}个（默认999：${defaultPriceCount}个）
-          - 库存填充：${stockFillCount}个`);
-        
+          - 库存填充：${stockFillCount}个（默认100）`);
+
         return { priceFillCount, stockFillCount, defaultPriceCount };
     }
 
-    // ===================== 取消勾选核心函数 =====================
+    // ===================== 取消勾选核心 =====================
     function findElementsWithAnyText(textList) {
         const results = [];
         function traverse(node) {
@@ -216,22 +225,19 @@
         let cancelCount = 0;
         const targetTextList = ['不可大于参考价格', '输入值需大于0'];
 
-        // 增强错误提示元素查找
         const baseErrorElements = document.querySelectorAll(
             'div.ant-form-explain, span.ant-form-item-explain-error, div[style*="color:red"], span[style*="red"], div[class*="error"], span[class*="error"]'
         );
-        
+
         const validBaseErrors = Array.from(baseErrorElements).filter(el => {
             const text = el.textContent.trim();
             return targetTextList.some(t => text.includes(t));
         });
-        
+
         const allTextMatchedElements = findElementsWithAnyText(targetTextList);
         const allValidErrorTips = [...new Set([...validBaseErrors, ...allTextMatchedElements])];
 
-        // 遍历违规提示，取消对应勾选
         for (const tip of allValidErrorTips) {
-            // 增强商品行查找
             let itemRow = tip;
             for (let i = 0; i < 20; i++) {
                 if (!itemRow) break;
@@ -240,28 +246,25 @@
             }
             if (!itemRow) continue;
 
-            // 增强复选框查找
             let checkbox = itemRow.querySelector('input[type="checkbox"]');
             if (!checkbox) {
                 const wrapper = itemRow.querySelector('.ant-checkbox-wrapper, .ant-checkbox, [class*="checkbox"]');
                 checkbox = wrapper ? wrapper.querySelector('input[type="checkbox"]') : null;
             }
             if (!checkbox) checkbox = itemRow.closest('tr')?.querySelector('td:first-child input[type="checkbox"]');
-            
+
             if (!checkbox || !checkbox.checked) continue;
 
-            // 模拟真实取消勾选操作
             checkbox.checked = false;
             checkbox.dispatchEvent(new Event('change', { bubbles: true, cancelable: true }));
             checkbox.dispatchEvent(new Event('click', { bubbles: true }));
-            
-            // 兼容Antd组件
+
             const checkboxDom = checkbox.parentElement;
             if (checkboxDom) {
                 checkboxDom.click();
                 await new Promise(resolve => setTimeout(resolve, 50));
             }
-            
+
             cancelCount++;
         }
         return cancelCount;
@@ -282,13 +285,11 @@
             clickHandler.call(this);
         });
 
-        // 挂载到body（更稳定）
         document.body.appendChild(btn);
         console.log(`✅ ${text}按钮已创建`);
         return btn;
     }
 
-    // 创建填充价格+库存按钮（绿色）
     function createFillPriceButton() {
         const btnStyle = `
             position: fixed !important;
@@ -326,7 +327,7 @@
                 const { priceFillCount, stockFillCount, defaultPriceCount } = scanAndFillPrices(true);
                 alert(`✅ 填充完成！
 - 价格填充：${priceFillCount}个（默认999：${defaultPriceCount}个）
-- 库存填充：${stockFillCount}个`);
+- 库存填充：${stockFillCount}个（默认100）`);
             } catch (error) {
                 console.error('❌ 填充出错：', error);
                 alert(`❌ 填充出错：${error.message}`);
@@ -337,7 +338,6 @@
         });
     }
 
-    // 创建取消勾选按钮（红色）
     function createCancelCheckButton() {
         const btnStyle = `
             position: fixed !important;
@@ -388,7 +388,6 @@
         });
     }
 
-    // 监听按钮是否被移除（重建保障）
     function watchButtons() {
         if (btnObserver) btnObserver.disconnect();
         btnObserver = new MutationObserver((mutations) => {
@@ -410,7 +409,6 @@
         btnObserver.observe(document.body, { childList: true, subtree: true });
     }
 
-    // 定时检查按钮是否存在
     function checkButtonsExist() {
         setInterval(() => {
             if (!document.getElementById('fillPriceBtn')) createFillPriceButton();
@@ -420,18 +418,14 @@
 
     // ===================== 初始化 =====================
     function init() {
-        // 等待页面完全加载
         if (document.readyState !== 'complete') {
             setTimeout(init, 500);
             return;
         }
-        
-        // 创建按钮
+
         createFillPriceButton();
         createCancelCheckButton();
-        // 监听按钮移除
         watchButtons();
-        // 定时检查按钮
         checkButtonsExist();
     }
 
