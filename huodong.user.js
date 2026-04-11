@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Temu服装活动报名（价格填充+取消勾选）
 // @namespace    http://tampermonkey.net/
-// @version      2.1
+// @version      3.0
 // @description  适配最新页面结构 - 填充申报价格（无对应货号默认填999）+取消含价格提示的商品勾选
 // @author       悟
 // @match        https://agentseller.temu.com/activity/*
@@ -44,396 +44,210 @@
         'TX229': 32, 'JQ031': 21.2, 'JQ030': 21.2, 'JQ032': 21.2
     };
 
-    // 🔥 修复1：库存默认值改为100
-    const DEFAULT_STOCK = 100;
-    const DEFAULT_PRICE = 999;
     const manualEditedInputs = new WeakSet();
     let isPriceFilling = false;
     let isCheckCanceling = false;
-    let btnObserver = null;
+    const DEFAULT_PRICE = 999;
+    const DEFAULT_STOCK = 100; // 默认库存
 
-    // ===================== 核心工具函数 =====================
-    // 增强版输入模拟
-    function setInputValue(input, value) {
-        if (!input || manualEditedInputs.has(input)) return false;
+    // ===================== 核心修复：强制赋值（兼容React/虚拟滚动） =====================
+    function forceSetInputValue(input, value) {
+        if (!input || manualEditedInputs.has(input)) return;
 
-        // 强制聚焦并清空
-        input.focus();
-        input.value = '';
-        input.dispatchEvent(new Event('input', { bubbles: true }));
+        try {
+            // 原生底层赋值，100%骗过框架
+            const nativeSetter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
+            nativeSetter.call(input, value);
 
-        // 原生赋值（适配React）
-        const nativeInputValueSetter = Object.getOwnPropertyDescriptor(
-            HTMLInputElement.prototype, 'value'
-        ).set;
-        nativeInputValueSetter.call(input, value);
-
-        // 触发所有必要事件
-        input.dispatchEvent(new Event('input', { bubbles: true, cancelable: true }));
-        input.dispatchEvent(new Event('change', { bubbles: true, cancelable: true }));
-        input.dispatchEvent(new Event('blur', { bubbles: true }));
-        input.blur();
-
-        return true;
+            // 触发框架识别事件
+            input.dispatchEvent(new Event('input', { bubbles: true }));
+            input.dispatchEvent(new Event('change', { bubbles: true }));
+            input.dispatchEvent(new Event('blur', { bubbles: true }));
+        } catch (e) {}
     }
 
-    // 🔥 修复2：货号匹配改为严格5位数（前缀2位+数字3位）
-    // 匹配规则：TX/JQ/TM开头 + 3位数字（支持JQ002-2这类扩展格式）
-    function extractSkuFromText(text) {
-        // 严格匹配：前缀(TX/JQ/TM) + 3位数字（可选-后缀）
-        const skuRegex = /(TX|JQ|TM)\d{3}(-\d+)?/g;
-        const matches = text.match(skuRegex);
-        return matches ? matches[0] : null;
+    // ===================== 单行列填充 =====================
+    function fillRowPrice(row) {
+        const text = row.textContent || '';
+        const skuMatch = text.match(/货号[:\s]+([A-Za-z0-9-]+)/);
+        if (!skuMatch) return false;
+
+        const sku = skuMatch[1].trim();
+        const price = skuPriceMap[sku] || DEFAULT_PRICE;
+
+        // 定位活动申报价格输入框
+        const priceInput = row.querySelector('input[currency="CNY"][data-testid="beast-core-inputNumber-htmlInput"]');
+        // 定位活动库存输入框
+        const stockInput = row.querySelector('input[min][max][data-testid="beast-core-inputNumber-htmlInput"]');
+
+        let success = false;
+        if (priceInput) {
+            forceSetInputValue(priceInput, price);
+            success = true;
+        }
+        if (stockInput) {
+            forceSetInputValue(stockInput, DEFAULT_STOCK);
+        }
+        return success;
     }
 
-    // 监听手动修改
-    document.addEventListener('input', (e) => {
-        const target = e.target;
-        if (target.matches('input[currency="CNY"], input[min][max], input[type="number"]')) {
-            manualEditedInputs.add(target);
-        }
-    }, true);
+    // ===================== 终极方案：逐行滚动加载+全量填充（解决虚拟滚动） =====================
+    async function autoScrollAndFill() {
+        // 精准定位虚拟滚动容器
+        const scrollContainer = document.querySelector('div.TB_body_5-120-1 > div[style*="overflow-y"]') ||
+                               document.querySelector('div[class*="body"] div[style*="overflow-y"]');
 
-    window.updateSkuPrice = (sku, newPrice) => {
-        skuPriceMap[sku] = newPrice;
-        scanAndFillPrices(true);
-    };
-
-    // ===================== 价格+库存填充核心 =====================
-    function scanAndFillPrices(force = false) {
-        let priceFillCount = 0;
-        let stockFillCount = 0;
-        let defaultPriceCount = 0;
-
-        // 1. 获取所有货号元素（页面中是data-testid="beast-core-box"）
-        const skuBoxElements = document.querySelectorAll('[data-testid="beast-core-box"]');
-
-        if (skuBoxElements.length === 0) {
-            console.warn('⚠️ 未找到货号盒子元素');
-            return { priceFillCount, stockFillCount };
+        if (!scrollContainer) {
+            console.warn("未找到滚动容器，尝试直接填充");
+            let count = 0;
+            document.querySelectorAll('tr.TB_tr_5-120-1').forEach(row => {
+                if(fillRowPrice(row)) count++;
+            });
+            return count;
         }
 
-        // 2. 遍历每个货号元素
-        skuBoxElements.forEach(skuBox => {
-            const boxText = skuBox.textContent.trim();
-            const sku = extractSkuFromText(boxText);
+        let fillCount = 0;
+        let lastScrollTop = -1;
+        const scrollStep = 50; // 每次滚动50px，逐行加载
+        const maxRetry = 500; // 最大滚动次数，防止死循环
+        let retryCount = 0;
 
-            if (!sku) {
-                console.log(`⚠️ 未从文本中提取到5位数货号：${boxText}`);
-                return;
+        // 重置滚动到顶部
+        scrollContainer.scrollTop = 0;
+        await new Promise(r => setTimeout(r, 300));
+
+        // 逐行滚动，加载所有数据并实时填充
+        while (retryCount < maxRetry) {
+            // 填充当前可视区域所有行
+            const currentRows = document.querySelectorAll('tr.TB_tr_5-120-1');
+            currentRows.forEach(row => {
+                if (fillRowPrice(row)) fillCount++;
+            });
+
+            // 记录当前滚动位置
+            lastScrollTop = scrollContainer.scrollTop;
+            // 向下滚动
+            scrollContainer.scrollTop += scrollStep;
+            // 等待渲染
+            await new Promise(r => setTimeout(r, 80));
+            retryCount++;
+
+            // 滚动到底部，退出循环
+            if (scrollContainer.scrollTop === lastScrollTop) {
+                break;
             }
+        }
 
-            console.log(`✅ 找到5位数货号：${sku}`);
-
-            // 3. 找到当前货号所在的TD单元格
-            const skuTd = skuBox.closest('td[data-testid="beast-core-table-td"]');
-            if (!skuTd) {
-                console.warn('⚠️ 未找到货号所在的TD单元格');
-                return;
-            }
-
-            // 4. 找到同一行的其他TD（价格输入框所在的TD）
-            let priceInput = null;
-            const parentTr = skuTd.closest('tr');
-
-            if (parentTr) {
-                // 查找当前行所有包含价格输入框的TD
-                const allTds = parentTr.querySelectorAll('td[data-testid="beast-core-table-td"]');
-                allTds.forEach(td => {
-                    const input = td.querySelector('input[currency="CNY"][data-testid="beast-core-inputNumber-htmlInput"]');
-                    if (input) priceInput = input;
-                });
-            }
-
-            // 降级方案：如果方案1没找到，向上查找整个表格的价格输入框
-            if (!priceInput) {
-                // 找到页面中所有价格输入框
-                const allPriceInputs = document.querySelectorAll('input[currency="CNY"][data-testid="beast-core-inputNumber-htmlInput"]');
-                // 取第一个可用的，或按位置匹配
-                priceInput = allPriceInputs[Array.from(skuBoxElements).indexOf(skuBox)] || allPriceInputs[0];
-            }
-
-            // 5. 填充价格
-            if (priceInput) {
-                const initializationFlag = 'priceInitialized';
-                if (force || !priceInput.dataset[initializationFlag]) {
-                    const price = skuPriceMap[sku] ?? DEFAULT_PRICE;
-                    if (setInputValue(priceInput, price)) {
-                        priceFillCount++;
-                        priceInput.dataset[initializationFlag] = 'true';
-                        if (price === DEFAULT_PRICE) defaultPriceCount++;
-                        console.log(`✅ 为${sku}填充价格：${price}`);
-                    }
-                }
-            } else {
-                console.warn(`⚠️ 未找到${sku}对应的价格输入框`);
-            }
-
-            // 6. 填充库存（适配你提供的库存元素结构）
-            let stockInput = null;
-            if (parentTr) {
-                // 🔥 优化：精准匹配库存输入框（根据你提供的元素特征）
-                stockInput = parentTr.querySelector('input[min="0"][max="99999999"][placeholder="请输入"][data-testid="beast-core-inputNumber-htmlInput"]:not([currency="CNY"])');
-            }
-
-            // 降级方案：全局查找库存输入框（排除价格输入框）
-            if (!stockInput) {
-                const allStockInputs = document.querySelectorAll('input[min="0"][max="99999999"][placeholder="请输入"][data-testid="beast-core-inputNumber-htmlInput"]:not([currency="CNY"])');
-                stockInput = allStockInputs[Array.from(skuBoxElements).indexOf(skuBox)] || allStockInputs[0];
-            }
-
-            if (stockInput) {
-                const initializationFlag = 'stockInitialized';
-                if (force || !stockInput.dataset[initializationFlag]) {
-                    // 使用修改后的默认值100
-                    if (setInputValue(stockInput, DEFAULT_STOCK)) {
-                        stockFillCount++;
-                        stockInput.dataset[initializationFlag] = 'true';
-                        console.log(`✅ 为${sku}填充库存：${DEFAULT_STOCK}`);
-                    }
-                }
-            } else {
-                console.warn(`⚠️ 未找到${sku}对应的库存输入框`);
-            }
+        // 最后兜底填充一次所有行
+        document.querySelectorAll('tr.TB_tr_5-120-1').forEach(row => {
+            if (fillRowPrice(row)) fillCount++;
         });
 
-        console.log(`📊 填充统计：
-          - 价格填充：${priceFillCount}个（默认999：${defaultPriceCount}个）
-          - 库存填充：${stockFillCount}个（默认100）`);
-
-        return { priceFillCount, stockFillCount, defaultPriceCount };
+        console.log(`✅ 全量填充完成：总计填充 ${fillCount} 个商品`);
+        return fillCount;
     }
 
-    // ===================== 取消勾选核心 =====================
-    function findElementsWithAnyText(textList) {
-        const results = [];
-        function traverse(node) {
-            if (!node || node.nodeType === Node.COMMENT_NODE) return;
-            if (node.nodeType === Node.TEXT_NODE) {
-                const textContent = node.textContent.trim();
-                const isMatch = textList.some(text => textContent.includes(text));
-                if (isMatch) results.push(node.parentElement);
-            } else if (node.nodeType === Node.ELEMENT_NODE) {
-                Array.from(node.childNodes).forEach(traverse);
-            }
-        }
-        traverse(document.body);
-        return results;
-    }
-
+    // ===================== 取消违规勾选 =====================
     async function autoUncheckInvalidItems() {
-        let cancelCount = 0;
-        const targetTextList = ['不可大于参考价格', '输入值需大于0'];
+        let count = 0;
+        const keywords = ['不可大于参考价格', '输入值需大于0', '价格错误', '违规'];
 
-        const baseErrorElements = document.querySelectorAll(
-            'div.ant-form-explain, span.ant-form-item-explain-error, div[style*="color:red"], span[style*="red"], div[class*="error"], span[class*="error"]'
-        );
+        document.querySelectorAll('span[style*="red"], .ant-form-item-explain-error, .Form_itemError_5-120-1').forEach(tip => {
+            const text = tip.textContent || '';
+            if (keywords.some(k => text.includes(k))) {
+                const row = tip.closest('tr.TB_tr_5-120-1');
+                if (!row) return;
 
-        const validBaseErrors = Array.from(baseErrorElements).filter(el => {
-            const text = el.textContent.trim();
-            return targetTextList.some(t => text.includes(t));
+                const checkbox = row.querySelector('input[type="checkbox"]');
+                if (checkbox && checkbox.checked) {
+                    checkbox.checked = false;
+                    checkbox.dispatchEvent(new Event('change', { bubbles: true }));
+                    count++;
+                }
+            }
         });
+        return count;
+    }
 
-        const allTextMatchedElements = findElementsWithAnyText(targetTextList);
-        const allValidErrorTips = [...new Set([...validBaseErrors, ...allTextMatchedElements])];
-
-        for (const tip of allValidErrorTips) {
-            let itemRow = tip;
-            for (let i = 0; i < 20; i++) {
-                if (!itemRow) break;
-                if (itemRow.tagName === 'TR' || itemRow.classList.toString().includes('item')) break;
-                itemRow = itemRow.parentElement;
-            }
-            if (!itemRow) continue;
-
-            let checkbox = itemRow.querySelector('input[type="checkbox"]');
-            if (!checkbox) {
-                const wrapper = itemRow.querySelector('.ant-checkbox-wrapper, .ant-checkbox, [class*="checkbox"]');
-                checkbox = wrapper ? wrapper.querySelector('input[type="checkbox"]') : null;
-            }
-            if (!checkbox) checkbox = itemRow.closest('tr')?.querySelector('td:first-child input[type="checkbox"]');
-
-            if (!checkbox || !checkbox.checked) continue;
-
-            checkbox.checked = false;
-            checkbox.dispatchEvent(new Event('change', { bubbles: true, cancelable: true }));
-            checkbox.dispatchEvent(new Event('click', { bubbles: true }));
-
-            const checkboxDom = checkbox.parentElement;
-            if (checkboxDom) {
-                checkboxDom.click();
-                await new Promise(resolve => setTimeout(resolve, 50));
-            }
-
-            cancelCount++;
+    // ===================== 按钮样式 =====================
+    GM_addStyle(`
+        #fillPriceBtn, #cancelCheckBtn {
+            position: fixed; top: 80px; z-index: 999999;
+            width: 180px; height: 50px; font-size: 16px; font-weight: bold;
+            border: 2px solid #fff; border-radius: 8px; color: #fff; cursor: pointer;
+            transition: all 0.2s;
         }
-        return cancelCount;
-    }
+        #fillPriceBtn { right: 210px; background: #00c800; }
+        #cancelCheckBtn { right: 20px; background: #ff3333; }
+        #fillPriceBtn:disabled, #cancelCheckBtn:disabled { opacity: 0.6; cursor: not-allowed; }
+    `);
 
-    // ===================== 按钮创建&管理 =====================
-    function createButton(id, text, style, clickHandler) {
-        let btn = document.getElementById(id);
-        if (btn) return btn;
+    // 创建填充按钮
+    function createFillBtn() {
+        const old = document.getElementById('fillPriceBtn');
+        if (old) old.remove();
 
-        btn = document.createElement('button');
-        btn.id = id;
-        btn.innerText = text;
-        btn.style = style;
-        btn.dataset.tampermonkey = 'true';
+        const btn = document.createElement('button');
+        btn.id = 'fillPriceBtn';
+        btn.innerText = '✅ 一键填充所有价格';
 
-        btn.addEventListener('click', async function() {
-            clickHandler.call(this);
-        });
-
-        document.body.appendChild(btn);
-        console.log(`✅ ${text}按钮已创建`);
-        return btn;
-    }
-
-    function createFillPriceButton() {
-        const btnStyle = `
-            position: fixed !important;
-            top: 20px !important;
-            right: 210px !important;
-            z-index: 9999999 !important;
-            width: 180px !important;
-            height: 50px !important;
-            background: #00cc00 !important;
-            color: #ffffff !important;
-            border: 3px solid #fff !important;
-            border-radius: 8px !important;
-            cursor: pointer !important;
-            font-size: 16px !important;
-            font-weight: bold !important;
-            box-shadow: 0 0 20px #00cc00 !important;
-            padding: 0 !important;
-            display: block !important;
-            opacity: 1 !important;
-            pointer-events: auto !important;
-            user-select: none !important;
-            -webkit-user-select: none !important;
-            box-sizing: content-box !important;
-        `;
-
-        return createButton('fillPriceBtn', '填充价格+库存', btnStyle, async function() {
-            if (isPriceFilling) {
-                alert('正在填充中，请勿重复点击！');
-                return;
-            }
+        btn.onclick = async () => {
+            if (isPriceFilling) return;
             isPriceFilling = true;
-            this.innerText = '填充中...';
+            btn.disabled = true;
+            btn.innerText = '⏳ 逐行加载填充中...';
 
             try {
-                const { priceFillCount, stockFillCount, defaultPriceCount } = scanAndFillPrices(true);
-                alert(`✅ 填充完成！
-- 价格填充：${priceFillCount}个（默认999：${defaultPriceCount}个）
-- 库存填充：${stockFillCount}个（默认100）`);
-            } catch (error) {
-                console.error('❌ 填充出错：', error);
-                alert(`❌ 填充出错：${error.message}`);
+                const num = await autoScrollAndFill();
+                alert(`✅ 填充完成！共成功填充 ${num} 个商品价格+库存`);
+            } catch (e) {
+                alert('❌ 填充失败：' + e.message);
             } finally {
                 isPriceFilling = false;
-                this.innerText = '填充价格+库存';
+                btn.disabled = false;
+                btn.innerText = '✅ 一键填充所有价格';
             }
-        });
+        };
+        document.body.appendChild(btn);
     }
 
-    function createCancelCheckButton() {
-        const btnStyle = `
-            position: fixed !important;
-            top: 20px !important;
-            right: 20px !important;
-            z-index: 9999999 !important;
-            width: 180px !important;
-            height: 50px !important;
-            background: #ff0000 !important;
-            color: #ffffff !important;
-            border: 3px solid #fff !important;
-            border-radius: 8px !important;
-            cursor: pointer !important;
-            font-size: 16px !important;
-            font-weight: bold !important;
-            box-shadow: 0 0 20px #ff0000 !important;
-            padding: 0 !important;
-            display: block !important;
-            opacity: 1 !important;
-            pointer-events: auto !important;
-            user-select: none !important;
-            -webkit-user-select: none !important;
-            box-sizing: content-box !important;
-        `;
+    // 创建取消勾选按钮
+    function createCancelBtn() {
+        const old = document.getElementById('cancelCheckBtn');
+        if (old) old.remove();
 
-        return createButton('cancelCheckBtn', '取消违规商品勾选', btnStyle, async function() {
-            if (isCheckCanceling) {
-                alert('正在取消勾选中，请勿重复点击！');
-                return;
-            }
+        const btn = document.createElement('button');
+        btn.id = 'cancelCheckBtn';
+        btn.innerText = '❌ 取消违规商品勾选';
+
+        btn.onclick = async () => {
+            if (isCheckCanceling) return;
             isCheckCanceling = true;
-            this.innerText = '执行中...';
+            btn.disabled = true;
+            btn.innerText = '⏳ 执行中...';
 
             try {
-                const cancelCount = await autoUncheckInvalidItems();
-                if (cancelCount === 0) {
-                    alert('⚠️ 未找到含"不可大于参考价格"或"输入值需大于0"的商品！');
-                } else {
-                    alert(`✅ 取消勾选完成！共取消${cancelCount}个违规商品勾选`);
-                }
-            } catch (error) {
-                console.error('❌ 取消勾选出错：', error);
-                alert(`❌ 取消勾选出错：${error.message}`);
+                const num = await autoUncheckInvalidItems();
+                alert(num ? `✅ 已取消 ${num} 个违规商品勾选` : '⚠️ 未找到违规商品');
+            } catch (e) {
+                alert('❌ 执行失败');
             } finally {
                 isCheckCanceling = false;
-                this.innerText = '取消违规商品勾选';
+                btn.disabled = false;
+                btn.innerText = '❌ 取消违规商品勾选';
             }
-        });
+        };
+        document.body.appendChild(btn);
     }
 
-    function watchButtons() {
-        if (btnObserver) btnObserver.disconnect();
-        btnObserver = new MutationObserver((mutations) => {
-            mutations.forEach(mutation => {
-                if (mutation.removedNodes.length > 0) {
-                    const removedIds = ['fillPriceBtn', 'cancelCheckBtn'];
-                    for (let node of mutation.removedNodes) {
-                        if (removedIds.includes(node.id)) {
-                            console.log(`⚠️ ${node.id}按钮被移除，重建！`);
-                            setTimeout(() => {
-                                node.id === 'fillPriceBtn' ? createFillPriceButton() : createCancelCheckButton();
-                            }, 100);
-                            return;
-                        }
-                    }
-                }
-            });
-        });
-        btnObserver.observe(document.body, { childList: true, subtree: true });
-    }
+    // ===================== 启动脚本 =====================
+    setTimeout(() => {
+        createFillBtn();
+        createCancelBtn();
+        console.log('✅ Temu报名脚本V3.0已加载完成');
+    }, 2000);
 
-    function checkButtonsExist() {
-        setInterval(() => {
-            if (!document.getElementById('fillPriceBtn')) createFillPriceButton();
-            if (!document.getElementById('cancelCheckBtn')) createCancelCheckButton();
-        }, 1000);
-    }
-
-    // ===================== 初始化 =====================
-    function init() {
-        if (document.readyState !== 'complete') {
-            setTimeout(init, 500);
-            return;
-        }
-
-        createFillPriceButton();
-        createCancelCheckButton();
-        watchButtons();
-        checkButtonsExist();
-    }
-
-    // 多重启动保障
-    if (document.readyState === 'loading') {
-        document.addEventListener('DOMContentLoaded', init);
-    } else {
-        init();
+})();
     }
     window.addEventListener('load', init);
     setTimeout(init, 1000);
