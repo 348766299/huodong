@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Temu服装活动报名（终极修复·全量填充）
 // @namespace    http://tampermonkey.net/
-// @version      3.0
+// @version      3.02
 // @description  终极修复：虚拟滚动未加载内容无法填充、滚动卡顿、价格失效；全表格强制填充
 // @author       悟
 // @match        https://agentseller.temu.com/activity/*
@@ -41,7 +41,8 @@
         'JQ001': 21.2, 'JQ008': 21.2, 'JQ002': 22, 'JQ002-2': 22, 'JQ003': 20.22,
         'JQ010': 26,'JQ011': 26,'JQ021': 22,'JQ020': 22,
         'JQ004': 22, 'JQ005': 30, 'JQ006': 26, 'JQ007': 20.22, 'JQ009': 21.2,
-        'TX229': 32, 'JQ031': 21.2, 'JQ030': 21.2, 'JQ032': 21.2
+        'TX229': 32, 'JQ031': 21.2, 'JQ030': 21.2, 'JQ032': 21.2, 
+        'JQ025': 27, 'JQ017': 22, 'JQ012': 23
     };
 
     const manualEditedInputs = new WeakSet();
