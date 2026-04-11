@@ -1,7 +1,7 @@
 // ==UserScript==
-// @name         Temu服装活动报名（终极修复·全量填充）
+// @name         Temu服装活动报名4.0
 // @namespace    http://tampermonkey.net/
-// @version      3.02
+// @version      4.0
 // @description  终极修复：虚拟滚动未加载内容无法填充、滚动卡顿、价格失效；全表格强制填充
 // @author       悟
 // @match        https://agentseller.temu.com/activity/*
@@ -17,7 +17,7 @@
 
     // ===================== 你的货号价格表 =====================
     let skuPriceMap = {
-           'TX003': 34, 'TX001': 26, 'TX007': 29, 'TX018': 19, 'TX019': 19,
+        'TX003': 34, 'TX001': 26, 'TX007': 29, 'TX018': 19, 'TX019': 19,
         'TX005': 27, 'TX029': 29, 'TX016': 22, 'TX004': 20, 'TX131': 26,
         'TX006': 27, 'TX143': 35, 'TX144': 29, 'TX142': 35, 'TX147': 28,
         'TX148': 28, 'TX149': 28, 'TX002': 19, 'TX051': 33, 'TX042': 23,
@@ -41,33 +41,29 @@
         'JQ001': 21.2, 'JQ008': 21.2, 'JQ002': 22, 'JQ002-2': 22, 'JQ003': 20.22,
         'JQ010': 26,'JQ011': 26,'JQ021': 22,'JQ020': 22,
         'JQ004': 22, 'JQ005': 30, 'JQ006': 26, 'JQ007': 20.22, 'JQ009': 21.2,
-        'TX229': 32, 'JQ031': 21.2, 'JQ030': 21.2, 'JQ032': 21.2, 
+        'TX229': 32, 'JQ031': 21.2, 'JQ030': 21.2, 'JQ032': 21.2,
         'JQ025': 27, 'JQ017': 22, 'JQ012': 23
     };
 
     const manualEditedInputs = new WeakSet();
     let isPriceFilling = false;
-    let isCheckCanceling = false;
+    let isRunning = false;
     const DEFAULT_PRICE = 999;
-    const DEFAULT_STOCK = 100; // 默认库存
+    const DEFAULT_STOCK = 100;
 
-    // ===================== 核心修复：强制赋值（兼容React/虚拟滚动） =====================
+    // ===================== 强制赋值输入框 =====================
     function forceSetInputValue(input, value) {
         if (!input || manualEditedInputs.has(input)) return;
-
         try {
-            // 原生底层赋值，100%骗过框架
             const nativeSetter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
             nativeSetter.call(input, value);
-
-            // 触发框架识别事件
             input.dispatchEvent(new Event('input', { bubbles: true }));
             input.dispatchEvent(new Event('change', { bubbles: true }));
             input.dispatchEvent(new Event('blur', { bubbles: true }));
         } catch (e) {}
     }
 
-    // ===================== 单行列填充 =====================
+    // ===================== 填充单行 =====================
     function fillRowPrice(row) {
         const text = row.textContent || '';
         const skuMatch = text.match(/货号[:\s]+([A-Za-z0-9-]+)/);
@@ -76,9 +72,7 @@
         const sku = skuMatch[1].trim();
         const price = skuPriceMap[sku] || DEFAULT_PRICE;
 
-        // 定位活动申报价格输入框
         const priceInput = row.querySelector('input[currency="CNY"][data-testid="beast-core-inputNumber-htmlInput"]');
-        // 定位活动库存输入框
         const stockInput = row.querySelector('input[min][max][data-testid="beast-core-inputNumber-htmlInput"]');
 
         let success = false;
@@ -92,160 +86,128 @@
         return success;
     }
 
-    // ===================== 终极方案：逐行滚动加载+全量填充（解决虚拟滚动） =====================
-    async function autoScrollAndFill() {
-        // 精准定位虚拟滚动容器
+    // ===================== 取消勾选（精准点击） =====================
+    function uncheckRow(row) {
+        try {
+            const checkbox = row.querySelector('.CBX_square_5-120-1.CBX_active_5-120-1');
+            if (!checkbox) return false;
+            checkbox.click();
+            return true;
+        } catch (e) {
+            return false;
+        }
+    }
+
+    // ===================== 检查单行是否超价 =====================
+    function checkRow(row) {
+        try {
+            const refEl = row.querySelector('.table-goods_labelValue__2XVSg');
+            if (!refEl) return false;
+            const refPrice = parseFloat(refEl.textContent.replace(/[^\d.]/g, '')) || 0;
+
+            const inputEl = row.querySelector('input[currency="CNY"]');
+            if (!inputEl) return false;
+            const myPrice = parseFloat(inputEl.value) || 0;
+
+            return myPrice > refPrice && refPrice > 0;
+        } catch (e) {
+            return false;
+        }
+    }
+
+    // ===================== ✅ 终极：一边滚动、一边填充、一边检测、一边取消 =====================
+    async function scrollFillCheckUncheck() {
         const scrollContainer = document.querySelector('div.TB_body_5-120-1 > div[style*="overflow-y"]') ||
                                document.querySelector('div[class*="body"] div[style*="overflow-y"]');
 
         if (!scrollContainer) {
-            console.warn("未找到滚动容器，尝试直接填充");
-            let count = 0;
-            document.querySelectorAll('tr.TB_tr_5-120-1').forEach(row => {
-                if(fillRowPrice(row)) count++;
-            });
-            return count;
+            alert("❌ 找不到滚动容器");
+            return 0;
         }
 
+        let cancelCount = 0;
         let fillCount = 0;
-        let lastScrollTop = -1;
-        const scrollStep = 50; // 每次滚动50px，逐行加载
-        const maxRetry = 500; // 最大滚动次数，防止死循环
-        let retryCount = 0;
-
-        // 重置滚动到顶部
         scrollContainer.scrollTop = 0;
         await new Promise(r => setTimeout(r, 300));
 
-        // 逐行滚动，加载所有数据并实时填充
-        while (retryCount < maxRetry) {
-            // 填充当前可视区域所有行
-            const currentRows = document.querySelectorAll('tr.TB_tr_5-120-1');
-            currentRows.forEach(row => {
+        let retry = 0;
+        const maxRetry = 1000;
+        let lastScroll = -1;
+
+        while (retry < maxRetry) {
+            const rows = document.querySelectorAll('tr.TB_tr_5-120-1');
+            rows.forEach(row => {
                 if (fillRowPrice(row)) fillCount++;
+                if (checkRow(row)) {
+                    if (uncheckRow(row)) cancelCount++;
+                }
             });
 
-            // 记录当前滚动位置
-            lastScrollTop = scrollContainer.scrollTop;
-            // 向下滚动
-            scrollContainer.scrollTop += scrollStep;
-            // 等待渲染
-            await new Promise(r => setTimeout(r, 80));
-            retryCount++;
+            lastScroll = scrollContainer.scrollTop;
+            scrollContainer.scrollTop += 80;
+            await new Promise(r => setTimeout(r, 60));
+            retry++;
 
-            // 滚动到底部，退出循环
-            if (scrollContainer.scrollTop === lastScrollTop) {
-                break;
-            }
+            if (scrollContainer.scrollTop === lastScroll) break;
         }
 
-        // 最后兜底填充一次所有行
+        // 最终扫尾
         document.querySelectorAll('tr.TB_tr_5-120-1').forEach(row => {
-            if (fillRowPrice(row)) fillCount++;
-        });
-
-        console.log(`✅ 全量填充完成：总计填充 ${fillCount} 个商品`);
-        return fillCount;
-    }
-
-    // ===================== 取消违规勾选 =====================
-    async function autoUncheckInvalidItems() {
-        let count = 0;
-        const keywords = ['不可大于参考价格', '输入值需大于0', '价格错误', '违规'];
-
-        document.querySelectorAll('span[style*="red"], .ant-form-item-explain-error, .Form_itemError_5-120-1').forEach(tip => {
-            const text = tip.textContent || '';
-            if (keywords.some(k => text.includes(k))) {
-                const row = tip.closest('tr.TB_tr_5-120-1');
-                if (!row) return;
-
-                const checkbox = row.querySelector('input[type="checkbox"]');
-                if (checkbox && checkbox.checked) {
-                    checkbox.checked = false;
-                    checkbox.dispatchEvent(new Event('change', { bubbles: true }));
-                    count++;
-                }
+            if (checkRow(row)) {
+                if (uncheckRow(row)) cancelCount++;
             }
         });
-        return count;
+
+        alert(`✅ 执行完成！
+填充商品：${fillCount} 个
+取消超价勾选：${cancelCount} 个`);
+
+        return cancelCount;
     }
 
     // ===================== 按钮样式 =====================
     GM_addStyle(`
-        #fillPriceBtn, #cancelCheckBtn {
-            position: fixed; top: 80px; z-index: 999999;
-            width: 180px; height: 50px; font-size: 16px; font-weight: bold;
-            border: 2px solid #fff; border-radius: 8px; color: #fff; cursor: pointer;
-            transition: all 0.2s;
+        #autoAllBtn {
+            position: fixed; top: 80px; right: 20px; z-index: 999999;
+            width: 220px; height: 55px; font-size: 16px; font-weight: bold;
+            background: #ff3333; color: #fff; border-radius: 8px; cursor: pointer;
         }
-        #fillPriceBtn { right: 210px; background: #00c800; }
-        #cancelCheckBtn { right: 20px; background: #ff3333; }
-        #fillPriceBtn:disabled, #cancelCheckBtn:disabled { opacity: 0.6; cursor: not-allowed; }
+        #autoAllBtn:disabled { opacity: 0.6; }
     `);
 
-    // 创建填充按钮
-    function createFillBtn() {
-        const old = document.getElementById('fillPriceBtn');
+    // 创建一键全自动按钮
+    function createAutoBtn() {
+        const old = document.getElementById('autoAllBtn');
         if (old) old.remove();
 
         const btn = document.createElement('button');
-        btn.id = 'fillPriceBtn';
-        btn.innerText = '✅ 一键填充所有价格';
+        btn.id = 'autoAllBtn';
+        btn.innerText = '✅ 一键填充+取消超价勾选';
 
         btn.onclick = async () => {
-            if (isPriceFilling) return;
-            isPriceFilling = true;
+            if (isRunning) return;
+            isRunning = true;
             btn.disabled = true;
-            btn.innerText = '⏳ 逐行加载填充中...';
+            btn.innerText = '⏳ 滚动+填充+检测+取消中...';
 
             try {
-                const num = await autoScrollAndFill();
-                alert(`✅ 填充完成！共成功填充 ${num} 个商品价格+库存`);
-            } catch (e) {
-                alert('❌ 填充失败：' + e.message);
-            } finally {
-                isPriceFilling = false;
-                btn.disabled = false;
-                btn.innerText = '✅ 一键填充所有价格';
-            }
-        };
-        document.body.appendChild(btn);
-    }
-
-    // 创建取消勾选按钮
-    function createCancelBtn() {
-        const old = document.getElementById('cancelCheckBtn');
-        if (old) old.remove();
-
-        const btn = document.createElement('button');
-        btn.id = 'cancelCheckBtn';
-        btn.innerText = '❌ 取消违规商品勾选';
-
-        btn.onclick = async () => {
-            if (isCheckCanceling) return;
-            isCheckCanceling = true;
-            btn.disabled = true;
-            btn.innerText = '⏳ 执行中...';
-
-            try {
-                const num = await autoUncheckInvalidItems();
-                alert(num ? `✅ 已取消 ${num} 个违规商品勾选` : '⚠️ 未找到违规商品');
+                await scrollFillCheckUncheck();
             } catch (e) {
                 alert('❌ 执行失败');
             } finally {
-                isCheckCanceling = false;
+                isRunning = false;
                 btn.disabled = false;
-                btn.innerText = '❌ 取消违规商品勾选';
+                btn.innerText = '✅ 一键填充+取消超价勾选';
             }
         };
+
         document.body.appendChild(btn);
     }
 
-    // ===================== 启动脚本 =====================
+    // 启动
     setTimeout(() => {
-        createFillBtn();
-        createCancelBtn();
-        console.log('✅ Temu报名脚本V3.0已加载完成');
+        createAutoBtn();
+        console.log('✅ 终极脚本加载完成：边滚动边取消');
     }, 2000);
 
 })();
