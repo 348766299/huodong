@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         Temu服装活动报名（价格填充+取消勾选）
+// @name         Temu服装活动报名（终极修复·全量填充）
 // @namespace    http://tampermonkey.net/
 // @version      3.0
-// @description  适配最新页面结构 - 填充申报价格（无对应货号默认填999）+取消含价格提示的商品勾选
+// @description  终极修复：虚拟滚动未加载内容无法填充、滚动卡顿、价格失效；全表格强制填充
 // @author       悟
 // @match        https://agentseller.temu.com/activity/*
 // @grant        GM_addStyle
@@ -15,9 +15,9 @@
 (function() {
     'use strict';
 
-    // ===================== 核心配置 =====================
+    // ===================== 你的货号价格表 =====================
     let skuPriceMap = {
-        'TX003': 34, 'TX001': 26, 'TX007': 29, 'TX018': 19, 'TX019': 19,
+           'TX003': 34, 'TX001': 26, 'TX007': 29, 'TX018': 19, 'TX019': 19,
         'TX005': 27, 'TX029': 29, 'TX016': 22, 'TX004': 20, 'TX131': 26,
         'TX006': 27, 'TX143': 35, 'TX144': 29, 'TX142': 35, 'TX147': 28,
         'TX148': 28, 'TX149': 28, 'TX002': 19, 'TX051': 33, 'TX042': 23,
@@ -246,10 +246,5 @@
         createCancelBtn();
         console.log('✅ Temu报名脚本V3.0已加载完成');
     }, 2000);
-
-})();
-    }
-    window.addEventListener('load', init);
-    setTimeout(init, 1000);
 
 })();
