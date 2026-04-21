@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Temu服装活动报名4.0
 // @namespace    http://tampermonkey.net/
-// @version      4.0
+// @version      4.1.0
 // @description  终极修复：虚拟滚动未加载内容无法填充、滚动卡顿、价格失效；全表格强制填充
 // @author       悟
 // @match        https://agentseller.temu.com/activity/*
@@ -51,7 +51,7 @@
         'TX198': 35, 'TX199': 35, 'TX200': 35, 'TX201': 35, 'TX202': 28, 
         'TX203': 24, 'TX205': 28, 'TX206': 22, 'TX207': 30, 'TX209': 35, 
         'TX210': 30, 'TX211': 30, 'TX215': 35, 'TX216': 35, 'TX221': 20, 
-        'TX224': 27
+        'TX224': 27, 'JQ026': 18, 'JQ029': 25
     };
 
     const manualEditedInputs = new WeakSet();
